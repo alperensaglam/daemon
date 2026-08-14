@@ -1,0 +1,14 @@
+# Çekirdek — UIA algı ve eylem katmanı
+comtypes>=1.4.0          # IUIAutomation COM arayüzü (tek round-trip CacheRequest)
+pywin32>=306             # GetForegroundWindow, SendInput, PrintWindow, DPI API
+
+# Vision fallback (accessibility ağacı sunmayan pencereler)
+Pillow>=10.0.0           # ekran görüntüsü tamponu
+
+# Test
+pytest>=8.0.0
+
+# NOT: Windows.Media.Ocr için WinRT binding'i ayrıca kurulur.
+# Paket adı sürümler arasında değişti (winsdk / winrt-*), bu yüzden
+# requirements'a sabitlenmedi; kurulum betiği hangisinin çalıştığını tespit eder.
+# Bkz. README > Vision fallback.

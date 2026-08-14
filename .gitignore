@@ -164,3 +164,19 @@ coverage/
 *.lcov
 test-results/
 playwright-report/
+
+
+# Python Sanal Ortamları (Tüm alt dizinler dahil)
+.venv/
+*/.venv/
+venv/
+*/venv/
+__pycache__/
+*/__pycache__/
+*.py[cod]
+
+# Node / Electron Bağımlılıkları
+node_modules/
+dist/
+out/
+
