@@ -1,0 +1,166 @@
+# ============================================================
+#  1. GİZLİ KALMASI GEREKENLER  (sızarsa gerçek zarar verir)
+# ============================================================
+# Bunlar repoya girerse, sildikten sonra bile git geçmişinde kalır.
+# Kazara commit'lediyseniz: anahtarı/parolayı İPTAL EDİN, dosyayı silmek yetmez.
+
+# Ortam değişkeni dosyaları
+.env
+.env.*
+*.env
+!.env.example
+!.env.sample
+
+# Sertifikalar, özel anahtarlar, imzalama dosyaları
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.asc
+*.gpg
+
+# SSH anahtarları
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+*.ppk
+.ssh/
+
+# Paket yöneticisi kimlik bilgileri (npm auth token buraya yazılır!)
+.npmrc
+.yarnrc
+.yarnrc.yml
+.netrc
+_netrc
+
+# Bulut sağlayıcı kimlik bilgileri
+.aws/
+.azure/
+gcloud-service-key.json
+service-account*.json
+*-serviceaccount.json
+
+# Yaygın sır dosyası adları
+secrets.json
+secrets.yml
+secrets.yaml
+credentials.json
+*.secret
+*.secrets
+apikeys.json
+# Not: "*secret*" gibi geniş kalıplar bilerek kullanılmadı —
+# secrets.test.js gibi meşru kaynak dosyalarını sessizce gizleyip
+# "neden commit olmuyor" diye saatler kaybettirir.
+
+# ============================================================
+#  2. BU UYGULAMANIN YEREL VERİSİ
+# ============================================================
+# Normalde %APPDATA%\masaustu-agent\ altında durur (repo dışı),
+# ama kazara kök dizine kopyalanırsa diye:
+#   config.json   -> API anahtarı ve çalışma alanı yolu içerir
+#   sessions.json -> tüm sohbet geçmişiniz
+/config.json
+/sessions.json
+/userData/
+*.local.json
+
+# ============================================================
+#  3. BAĞIMLILIKLAR  (gizli DEĞİL — sadece gereksiz)
+# ============================================================
+# node_modules gizli bir şey değildir; içi herkese açık paketlerdir.
+# Yine de commit'lenmez: 273 MB / 933 dosya, işletim sistemine özel
+# derlenmiş dosyalar içerebilir ve package-lock.json'dan birebir
+# yeniden üretilebilir (npm install).
+node_modules/
+jspm_packages/
+.pnp
+.pnp.js
+.yarn/cache
+.yarn/unplugged
+
+# ÖNEMLİ: package-lock.json COMMIT EDİLMELİ.
+# Sürümleri sabitler; olmadan başkasında farklı paket sürümleri kurulur.
+
+# ============================================================
+#  4. DERLEME ÇIKTISI
+# ============================================================
+dist/
+out/
+build/
+release/
+app-builds/
+*.exe
+*.msi
+*.dmg
+*.deb
+*.rpm
+*.snap
+*.AppImage
+*.blockmap
+*.nupkg
+
+# ============================================================
+#  5. LOG VE ÖNBELLEK
+# ============================================================
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.npm
+.eslintcache
+.cache/
+.parcel-cache/
+.temp/
+tmp/
+temp/
+*.tmp
+*.pid
+*.seed
+
+# ============================================================
+#  6. EDİTÖR VE İŞLETİM SİSTEMİ ARTIKLARI
+# ============================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-workspace
+*.sublime-project
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+.directory
+.Trash-*
+
+# ============================================================
+#  7. TEST VE KAPSAM ÇIKTISI
+# ============================================================
+coverage/
+.nyc_output/
+*.lcov
+test-results/
+playwright-report/

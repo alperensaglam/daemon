@@ -1,0 +1,33 @@
+{
+  "name": "masaustu-agent",
+  "version": "1.0.0",
+  "description": "Yerel LLM ile calisan masaustu agent - dosya, terminal, sistem ve web araclariyla",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder"
+  },
+  "keywords": [
+    "agent",
+    "electron",
+    "ollama",
+    "local-llm"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.2.0"
+  },
+  "build": {
+    "appId": "com.local.masaustuagent",
+    "productName": "Masaustu Agent",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    }
+  }
+}

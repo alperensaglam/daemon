@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self';">
+  <title>Masaüstü Agent</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Sol kenar çubuğu -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-head">
+        <button class="btn primary block" id="newChatBtn">+ Yeni sohbet</button>
+      </div>
+      <div class="session-list" id="sessionList"></div>
+      <div class="sidebar-foot">
+        <button class="btn ghost block" id="settingsBtn">⚙ Ayarlar</button>
+      </div>
+    </aside>
+
+    <!-- Ana bölüm -->
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-btn" id="toggleSidebar" title="Kenar çubuğu">☰</button>
+        <div class="status" id="status">
+          <span class="dot" id="statusDot"></span>
+          <span id="statusText">Bağlanıyor…</span>
+        </div>
+        <div class="spacer"></div>
+        <label class="perm">
+          İzin:
+          <select id="permMode" title="Araçların çalışma izni">
+            <option value="ask">Sor (önerilen)</option>
+            <option value="auto">Otomatik</option>
+            <option value="readonly">Salt-okunur</option>
+          </select>
+        </label>
+        <span class="model-badge" id="modelBadge">—</span>
+      </header>
+
+      <div class="chat" id="chat">
+        <div class="welcome" id="welcome">
+          <h1>Masaüstü Agent</h1>
+          <p>Bilgisayarında iş yapabilen yerel asistanın. Ne yapmamı istersin?</p>
+          <div class="examples">
+            <button class="example">Masaüstümde hangi dosyalar var?</button>
+            <button class="example">Masaüstüne notlar.txt oluştur, içine haftalık plan yaz</button>
+            <button class="example">Boş disk alanımı ve RAM kullanımımı söyle</button>
+            <button class="example">En çok RAM kullanan 5 programı listele</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <div class="composer-inner">
+          <textarea id="input" rows="1" placeholder="Bir görev yaz…  (Enter: gönder, Shift+Enter: yeni satır)"></textarea>
+          <button class="btn primary send" id="sendBtn" title="Gönder">➤</button>
+          <button class="btn danger send hidden" id="stopBtn" title="Durdur">■</button>
+        </div>
+        <div class="composer-hint" id="composerHint"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Ayarlar paneli -->
+  <div class="modal hidden" id="settingsModal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2>Ayarlar</h2>
+        <button class="icon-btn" id="closeSettings">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <section>
+          <h3>Model sunucusu</h3>
+          <label>Sunucu adresi (OpenAI-uyumlu)
+            <input type="text" id="cfgBaseUrl" placeholder="http://localhost:11434/v1">
+          </label>
+          <p class="hint">Ollama: <code>http://localhost:11434/v1</code> · LM Studio: <code>http://localhost:1234/v1</code></p>
+
+          <label>API anahtarı (yerel sunucuda gerekmez)
+            <input type="password" id="cfgApiKey" placeholder="(boş)">
+          </label>
+
+          <label>Model
+            <div class="row">
+              <input type="text" id="cfgModel" list="modelOptions" placeholder="qwen3:4b">
+              <datalist id="modelOptions"></datalist>
+              <button class="btn" id="refreshModels">Yenile</button>
+            </div>
+          </label>
+          <p class="hint warn">
+            Model <b>tool calling (function calling)</b> desteklemelidir. Önerilenler:
+            <code>qwen3:4b</code>, <code>qwen3:8b</code>, <code>llama3.1:8b</code>, <code>qwen2.5:7b</code>.
+            <code>gemma2</code> gibi araç desteği olmayan modellerde agent sadece sohbet eder.
+          </p>
+
+          <div class="row">
+            <label class="grow">Sıcaklık (yaratıcılık)
+              <input type="number" id="cfgTemperature" min="0" max="2" step="0.1">
+            </label>
+            <label class="grow">Maksimum adım
+              <input type="number" id="cfgMaxIterations" min="1" max="100" step="1">
+            </label>
+          </div>
+
+          <label class="check">
+            <input type="checkbox" id="cfgStream"> Akışlı yanıt (streaming)
+          </label>
+          <p class="hint">Yanıtlar yarım geliyorsa veya araç çağrıları bozuksa bunu kapatın.</p>
+
+          <label class="check">
+            <input type="checkbox" id="cfgNoThink"> Düşünme modunu kapat <code>/no_think</code>
+          </label>
+          <p class="hint">
+            qwen3 her yanıttan önce uzun uzun "düşünür". Bu bilgisayarda ölçülen etki:
+            düz sohbet <b>111s → 39s (2.8×)</b>. Kapalıyken model daha hızlı ama karmaşık
+            görevlerde biraz daha az isabetli olabilir. qwen3 dışı modellerde etkisizdir.
+          </p>
+
+          <label class="check">
+            <input type="checkbox" id="cfgKeepModelLoaded"> Modeli bellekte tut
+          </label>
+          <p class="hint">
+            Ollama modeli 5 dk boştan sonra RAM'den atar; sonraki mesaj 2.5 GB'ı diskten
+            yeniden yüklemeyi bekler. Bu açıkken model 30 dk bellekte kalır.
+          </p>
+
+          <button class="btn" id="testConn">Bağlantıyı test et</button>
+          <div id="testResult" class="test-result"></div>
+        </section>
+
+        <section>
+          <h3>Güvenlik</h3>
+          <label>Çalışma alanı (varsayılan klasör)
+            <div class="row">
+              <input type="text" id="cfgWorkspace">
+              <button class="btn" id="pickFolder">Seç…</button>
+            </div>
+          </label>
+          <p class="hint">Dosya araçları bu klasörle sınırlıdır. Dışına çıkan her işlem onay ister.</p>
+
+          <label>İzin modu
+            <select id="cfgPermissionMode">
+              <option value="ask">Sor — okuma otomatik, yazma/komut onay ister (önerilen)</option>
+              <option value="auto">Otomatik — sadece yüksek riskli işlemler sorar</option>
+              <option value="readonly">Salt-okunur — hiçbir şey değiştirilemez</option>
+            </select>
+          </label>
+          <p class="hint warn">
+            Silme, biçimlendirme, kapatma gibi yüksek riskli komutlar <b>Otomatik</b> modda bile her zaman onay ister.
+          </p>
+        </section>
+
+        <section>
+          <h3>Arama</h3>
+          <label>SearXNG adresi (isteğe bağlı)
+            <input type="text" id="cfgSearxng" placeholder="https://searx.ornek.com">
+          </label>
+          <p class="hint">Boş bırakılırsa DuckDuckGo kullanılır. Arama bozulursa buraya bir SearXNG sunucusu girin.</p>
+        </section>
+
+        <section>
+          <h3>Davranış</h3>
+          <label>Sistem promptu
+            <textarea id="cfgSystemPrompt" rows="8"></textarea>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="cfgMinimizeToTray"> Pencere kapatılınca sistem tepsisinde kal
+          </label>
+          <p class="hint">Global kısayol: <code id="shortcutLabel">Ctrl+Shift+Space</code> (yeniden başlatınca etkin olur)</p>
+        </section>
+
+        <section>
+          <h3>Araçlar</h3>
+          <div id="toolList" class="tool-list"></div>
+        </section>
+      </div>
+
+      <div class="modal-foot">
+        <button class="btn ghost" id="resetConfig">Varsayılanlara dön</button>
+        <div class="spacer"></div>
+        <button class="btn" id="cancelSettings">Vazgeç</button>
+        <button class="btn primary" id="saveSettings">Kaydet</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
