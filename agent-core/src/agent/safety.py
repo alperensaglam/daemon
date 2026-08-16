@@ -60,6 +60,92 @@ _COMPILED = [(re.compile(p, re.IGNORECASE), why) for p, why in _HIGH_RISK_PATTER
 # Hicbir zaman UI'yi degistirmeyen eylemler.
 _READ_ONLY_ACTIONS = frozenset({"get_state", "snapshot", "focus", "scroll", "wait"})
 
+# --------------------------------------------------------------------------- #
+#  Kabuk komutlari
+# --------------------------------------------------------------------------- #
+#
+# Hibrit yurutme (bkz. execution/router.py) LLM'e kabuk erisimi de verir. Bir
+# kabuk komutu, yanlis dugmeye tiklamaktan daha genis bir yetkidir: tek satir
+# bir dizini silebilir. Bu yuzden risk siniflandirmasi UI eylemleriyle AYNI
+# yerde yapilir — iki ayri politika olsaydi biri gunceleneme kalirdi.
+#
+# Siniflandirma komutun **her segmentine** bakar: "ls && rm -rf build" ilk
+# tokenina bakip dusuk riskli sayilamaz.
+
+_SHELL_ACTIONS = frozenset({"run_shell", "shell"})
+
+# Yalnizca okuyan komutlar. Bunlari her seferinde sormak, onay istemini
+# anlamsizlastirir (kullanici korkulukları okumadan "evet"e basmaya baslar).
+_SHELL_READ_ONLY = frozenset({
+    "ls", "dir", "pwd", "cd", "cat", "type", "head", "tail", "less", "wc",
+    "grep", "rg", "findstr", "find", "which", "where", "echo", "date", "whoami",
+    "hostname", "uname", "df", "du", "ps", "top", "env", "printenv", "stat",
+    "file", "tree", "diff", "sort", "uniq", "cut", "awk", "sed", "jq", "basename",
+    "dirname", "realpath", "sleep", "test", "true", "false",
+    # PowerShell okuma cmdlet'leri
+    "get-childitem", "get-content", "get-process", "get-location", "get-date",
+    "select-string", "measure-object", "select-object", "where-object",
+    "sort-object", "format-table", "out-string", "test-path", "get-item",
+})
+
+# Git alt komutlari ayri ele alinir: "git status" okuma, "git push" yayindir.
+_GIT_READ_ONLY = frozenset({
+    "status", "log", "diff", "show", "branch", "remote", "config", "blame",
+    "describe", "rev-parse", "ls-files", "shortlog", "stash",
+})
+
+_HIGH_RISK_SHELL = [
+    (r"\brm\s+(-\w+\s+)*-?\w*[rf]", "ozyinelemeli/zorlamali silme"),
+    (r"\b(rmdir|unlink|shred|srm)\b", "silme"),
+    (r"\bdel\s+/[sqf]|\bRemove-Item\b.*-Recurse", "ozyinelemeli silme"),
+    (r"\b(mkfs|fdisk|diskutil\s+(erase|partition)|format\s+[a-z]:)", "disk bicimlendirme"),
+    (r"\bdd\s+.*\bof=/dev/", "ham disk yazma"),
+    (r"\b(shutdown|reboot|halt|poweroff)\b", "sistem kapatma"),
+    (r"\b(kill|killall|pkill|taskkill|Stop-Process)\b", "surec sonlandirma"),
+    (r"\bsudo\b|\bdoas\b|\bStart-Process\b.*-Verb\s+RunAs", "yetki yukseltme"),
+    (r"\bchmod\b|\bchown\b|\bicacls\b|\battrib\b", "izin degistirme"),
+    (r"\bgit\s+(push|reset\s+--hard|clean\s+-\w*[fd]|checkout\s+--|branch\s+-D)",
+     "geri alinamaz git islemi"),
+    (r"\b(npm|pnpm|yarn)\s+(publish|unpublish)|\btwine\s+upload", "paket yayinlama"),
+    (r"\b(pip|npm|brew|apt|apt-get|winget|choco)\s+(install|uninstall|remove)",
+     "paket kurulumu/kaldirma"),
+    (r"\b(systemctl|launchctl|sc\.exe|net\s+stop)\b", "servis yonetimi"),
+    (r"\b(curl|wget|iwr|Invoke-WebRequest)\b[^|;]*\|\s*(ba)?sh|\|\s*iex",
+     "indirilen betigi dogrudan calistirma"),
+    (r"\breg\s+(delete|add)\b|\bSet-ItemProperty\b.*HKLM", "kayit defteri yazma"),
+    (r">\s*/dev/(sd|disk)", "ham cihaza yazma"),
+    (r"\b(mv|move|Move-Item)\b", "tasima (uzerine yazabilir)"),
+]
+
+_COMPILED_SHELL = [(re.compile(p, re.IGNORECASE), why) for p, why in _HIGH_RISK_SHELL]
+
+# Segment ayiricilari: her biri ayri bir komut baslatir.
+_SEGMENT_SPLIT = re.compile(r"\|\||&&|;|\||\n")
+
+
+def _shell_segments(command: str) -> list[str]:
+    return [s.strip() for s in _SEGMENT_SPLIT.split(command or "") if s.strip()]
+
+
+def _is_read_only_segment(segment: str) -> bool:
+    """Segment yalnizca okuma yapiyor mu?
+
+    Yonlendirme (``>``, ``>>``) tek basina yeter: ``echo x > dosya`` okuma
+    degildir, dosyayi ezer.
+    """
+    if ">" in segment:
+        return False
+    tokens = segment.split()
+    if not tokens:
+        return False
+    head = tokens[0].strip("'\"").rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
+    if head == "git":
+        subcommand = next((t for t in tokens[1:] if not t.startswith("-")), "")
+        return subcommand.lower() in _GIT_READ_ONLY
+    return head in _SHELL_READ_ONLY
+
+
+
 
 @dataclass(slots=True)
 class RiskAssessment:
@@ -76,6 +162,9 @@ def assess(action: str, node: UINode | None = None, text: str | None = None) -> 
     """Bir eylemin risk seviyesini belirler."""
     reasons: list[str] = []
 
+    if action in _SHELL_ACTIONS:
+        return assess_shell(text or "")
+
     if action in _READ_ONLY_ACTIONS:
         return RiskAssessment(Risk.LOW, [], _describe(action, node, text))
 
@@ -90,6 +179,32 @@ def assess(action: str, node: UINode | None = None, text: str | None = None) -> 
                 break
 
     return RiskAssessment(level, reasons, _describe(action, node, text))
+
+
+def assess_shell(command: str) -> RiskAssessment:
+    """Bir kabuk komutunun risk seviyesi.
+
+    Uc seviye, uc farkli davranis:
+        LOW    — sorulmadan calisir (salt okuma).
+        MEDIUM — 'ask' modunda sorulur, '--yes' ile gecer.
+        HIGH   — '--yes' verilse bile daima sorulur.
+    """
+    command = (command or "").strip()
+    if not command:
+        return RiskAssessment(Risk.LOW, [], "bos komut")
+
+    reasons: list[str] = []
+    for pattern, why in _COMPILED_SHELL:
+        if pattern.search(command):
+            reasons.append(why)
+    if reasons:
+        return RiskAssessment(Risk.HIGH, reasons, f"Kabuk komutu: {command}")
+
+    segments = _shell_segments(command)
+    if segments and all(_is_read_only_segment(s) for s in segments):
+        return RiskAssessment(Risk.LOW, [], f"Kabuk komutu (salt okuma): {command}")
+
+    return RiskAssessment(Risk.MEDIUM, [], f"Kabuk komutu: {command}")
 
 
 def _describe(action: str, node: UINode | None, text: str | None) -> str:

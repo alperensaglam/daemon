@@ -16,8 +16,9 @@ from typing import Any
 
 from ..core.errors import NodeNotFound, StaleNodeError
 from ..core.types import ActionResult, Snapshot, UINode
-from . import keys as K
-from .base import ActionExecutor
+from . import keys_win as K
+from .common import BaseExecutor
+from .keynames import intent_combo
 
 # UIA pattern id'leri (UIAutomationClient sabitleriyle ayni).
 _PATTERN_IDS = {
@@ -33,18 +34,19 @@ _PATTERN_IDS = {
 }
 
 
-class WindowsUIAExecutor(ActionExecutor):
+class WindowsUIAExecutor(BaseExecutor):
     """UIA pattern tabanli eylem yurutucusu."""
 
-    def __init__(self, extractor: Any = None, verify: bool = True) -> None:
+    def __init__(self, extractor: Any = None, verify: bool = True,
+                 pruner: Any = None) -> None:
         """
         Args:
             extractor: Eylem sonrasi dogrulama icin kullanilacak cikarici.
                 ``None`` ise ``ui_changed`` hesaplanmaz.
             verify: Eylem sonrasi yeniden snapshot alinip degisim kontrol edilsin mi.
+            pruner: Dogrulamada kullanilacak budayici (bkz. BaseExecutor).
         """
-        self._extractor = extractor
-        self._verify = verify and extractor is not None
+        super().__init__(extractor=extractor, verify=verify, pruner=pruner)
 
         import comtypes.client  # noqa: PLC0415
         self._mod = comtypes.client.GetModule("UIAutomationCore.dll")
@@ -53,40 +55,22 @@ class WindowsUIAExecutor(ActionExecutor):
     #  Dugum cozumleme — bayat id koruma
     # ------------------------------------------------------------------ #
 
-    def _resolve(self, snapshot: Snapshot, node_id: int) -> UINode:
-        """node_id'yi dugume cevirir ve hala gecerli oldugunu dogrular.
-
-        Bayat referans, bu sistemdeki en tehlikeli hata sinifidir: UI degistikten
-        sonra ``[@7]`` bambaska bir dugum olabilir ve "Kaydet" yerine "Sil"e
-        tiklanir. Bu yuzden RuntimeId karsilastirilir ve uyusmazlikta islem
-        yapilmaz — yanlis tiklamaktansa hata vermek dogrudur.
-        """
-        node = snapshot.by_id(node_id)
-        if node is None:
-            available = [n.node_id for n in snapshot.nodes]
-            raise NodeNotFound(
-                f"[@{node_id}] bu anlik goruntude yok. "
-                f"Gecerli id araligi: 1..{max(available) if available else 0}"
-            )
-        if node.element is None:
-            raise StaleNodeError(f"[@{node_id}] icin canli eleman referansi yok.")
-
-        # RuntimeId hala ayni mi? Eleman yok olduysa COM hatasi verir.
+    def _check_identity(self, node: UINode) -> None:
+        """RuntimeId hala ayni mi? Eleman yok olduysa COM hatasi verir."""
         try:
             current = tuple(int(x) for x in (node.element.GetRuntimeId() or ()))
         except Exception as exc:
             raise StaleNodeError(
-                f"[@{node_id}] ({node.role} '{node.name}') artik mevcut degil — "
+                f"[@{node.node_id}] ({node.role} '{node.name}') artik mevcut degil — "
                 f"UI degismis olmali. Yeni bir anlik goruntu alin. Detay: {exc}"
             ) from exc
 
         if node.runtime_id and current and current != node.runtime_id:
             raise StaleNodeError(
-                f"[@{node_id}] baska bir elemana isaret ediyor "
+                f"[@{node.node_id}] baska bir elemana isaret ediyor "
                 f"(beklenen {node.runtime_id}, bulunan {current}). "
                 "UI degismis; yeni bir anlik goruntu alin."
             )
-        return node
 
     def _pattern(self, node: UINode, name: str) -> Any | None:
         pid = _PATTERN_IDS.get(name)
@@ -217,8 +201,10 @@ class WindowsUIAExecutor(ActionExecutor):
         try:
             time.sleep(0.05)                      # odagin yerlesmesi icin
             if clear_first:
-                K.press_combo("ctrl+a")
-                K.press_combo("delete")
+                # Duz kombinasyon yerine niyet: ayni kod macOS'ta meta+a uretir
+                # (bkz. keynames.INTENTS).
+                K.press_combo(intent_combo("select_all", "win32"))
+                K.press_combo(intent_combo("clear_field", "win32"))
             K.type_unicode(text)
             return self._done("type_text", "keyboard", node, started, before)
         except Exception as exc:
@@ -322,45 +308,9 @@ class WindowsUIAExecutor(ActionExecutor):
     # ------------------------------------------------------------------ #
     #  Yardimcilar
     # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _ms(started: float) -> float:
-        return (time.perf_counter() - started) * 1000.0
-
-    def _done(self, action: str, method: str, node: UINode | None,
-              started: float, before: tuple | None) -> ActionResult:
-        result = ActionResult(
-            ok=True, action=action, method=method,
-            detail=node.describe() if node else "",
-            elapsed_ms=self._ms(started),
-        )
-        result.ui_changed = self._changed(before)
-        return result
-
-    def _fingerprint(self, snapshot: Snapshot) -> tuple | None:
-        return snapshot.fingerprint() if self._verify else None
-
-    def _changed(self, before: tuple | None) -> bool | None:
-        """Eylem gercekten bir sey degistirdi mi?
-
-        'Basarili ama hicbir sey olmadi' durumu, LLM'in ayni eylemi tekrar
-        denemesinin baslica sebebidir; bunu olcup geri bildirmek dongunun
-        tikanmasini onler.
-        """
-        if before is None or self._extractor is None:
-            return None
-        try:
-            from ..perception.pruner import TreePruner  # noqa: PLC0415
-            time.sleep(0.12)                  # UI'nin tepki vermesi icin
-            after = TreePruner().prune(self._extractor.extract()).fingerprint()
-            return after != before
-        except Exception:
-            return None
-
-    def _bring_to_front(self, snapshot: Snapshot) -> None:
-        """Piksel/tekerlek yolu icin pencereyi one getirmeye calisir (zorunlu degil)."""
-        if snapshot.window_handle:
-            self._ensure_foreground(snapshot.window_handle)
+    #
+    # _ms, _done, _fingerprint, _changed ve _bring_to_front artik
+    # action/common.py:BaseExecutor icinde — hicbiri Windows'a ozgu degildi.
 
     @staticmethod
     def _ensure_foreground(hwnd: int) -> tuple[bool, str]:

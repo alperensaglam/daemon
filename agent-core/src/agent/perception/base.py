@@ -36,6 +36,30 @@ class ExtractResult:
     warning: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class WindowInfo:
+    """Ust duzey bir pencerenin ozeti — hedef secmek icin.
+
+    ``handle`` platforma gore farkli bir sayidir (Windows'ta HWND, macOS'ta
+    CGWindowID) ama her iki durumda da ``extract(handle)``a verilebilir.
+    """
+
+    handle: int
+    title: str
+    process_name: str = ""
+    pid: int = 0
+    rect: Rect = field(default_factory=lambda: Rect(0, 0, 0, 0))
+    is_active: bool = False
+    is_minimized: bool = False
+
+
+def format_window_row(window: WindowInfo) -> str:
+    """Tek satirlik listeleme bicimi. Platformdan bagimsiz, bu yuzden burada."""
+    mark = "*" if window.is_active else (" " if not window.is_minimized else "_")
+    proc = f" [{window.process_name}]" if window.process_name else ""
+    return f"{mark} {window.handle:>10}  {window.title[:70]}{proc}"
+
+
 class UITreeExtractor(ABC):
     """Isletim sistemi erisilebilirlik agacini okuyan bilesen."""
 
@@ -54,6 +78,15 @@ class UITreeExtractor(ABC):
     @abstractmethod
     def active_window_handle(self) -> int:
         """Aktif pencerenin tutamacini dondurur."""
+
+    @abstractmethod
+    def list_windows(self) -> list[WindowInfo]:
+        """Gorunur ust duzey pencereler, on plandan arkaya dogru sirali.
+
+        CLI'nin hedef secebilmesi icin gerekir; onceden bu is cli.py icinde
+        satir-ici bir ``win32gui`` importuyla yapiliyordu, yani baska hicbir
+        platformda calisamazdi.
+        """
 
     def close(self) -> None:
         """Kaynaklari birakir. Alt siniflar gerekirse gecersiz kilar."""

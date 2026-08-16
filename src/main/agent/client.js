@@ -24,7 +24,7 @@ function connectionError(err, config) {
     return new Error(
       `Model sunucusuna baglanilamadi: ${config.baseUrl}\n\n` +
       'Kontrol listesi:\n' +
-      '1. Ollama calisiyor mu?  PowerShell: ollama list\n' +
+      '1. Ollama calisiyor mu?  Terminalde: ollama list\n' +
       '2. Calismiyorsa baslatin: ollama serve\n' +
       '3. Adres dogru mu? Ayarlar > Sunucu adresi' +
       (code ? `\n\n(teknik: ${code})` : '')

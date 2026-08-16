@@ -100,4 +100,33 @@ function buildIcon(size = 32) {
   });
 }
 
-module.exports = { buildIcon };
+/**
+ * macOS menu cubugu icin "template" ikon.
+ *
+ * Template ikonlarda RENK KANALI TAMAMEN YOK SAYILIR; sistem yalnizca alfayi
+ * okur ve temaya gore (acikta siyah, koyuda beyaz) yeniden boyar. Bu yuzden
+ * buildIcon'un koyu diski template olarak isaretlenirse ic detay kaybolur ve
+ * menu cubugunda dolu bir leke gorunur. Burada disk seffaf birakilir; yalnizca
+ * halka ve cekirdek opak cizilir.
+ */
+function buildTemplateIcon(size = 32) {
+  const c = (size - 1) / 2;
+  const rRingOut = size * 0.42;
+  const rRingIn = size * 0.26;
+  const rCore = size * 0.14;
+
+  return makePng(size, (x, y) => {
+    const dx = x - c;
+    const dy = y - c;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    const clamp = (v) => Math.max(0, Math.min(1, v));
+
+    const core = clamp(rCore - d + 0.5);
+    const ring = Math.min(clamp(rRingOut - d + 0.5), clamp(d - rRingIn + 0.5));
+
+    const a = Math.round(255 * Math.max(core, ring));
+    return [0, 0, 0, a];
+  });
+}
+
+module.exports = { buildIcon, buildTemplateIcon };

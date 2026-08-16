@@ -5,21 +5,63 @@ const config = require('./config');
 const history = require('./history');
 const registry = require('./agent/registry');
 const client = require('./agent/client');
-const loop = require('./agent/loop');
+const runner = require('./agent/runner');
 
-/** Aktif calisma durumu (ayni anda tek tur calisir). */
-let current = null; // { controller, pendingApprovals: Map<callId, {resolve}> }
+/** Arayuzden cevap bekleyen onay istekleri: callId -> resolve */
+const pendingApprovals = new Map();
 
-function register(getWindow) {
+function register(getWindow, hooks = {}) {
   const send = (channel, payload) => {
     const win = getWindow();
     if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
   };
 
+  // Kisayol degistiginde yeniden kaydedilmezse kullanici yeni kombinasyonu
+  // uygulamayi kapatip acana kadar kullanamaz.
+  const applyShortcut = () => hooks.registerShortcut?.();
+
   // ---- Ayarlar ----
   ipcMain.handle('config:get', () => config.load());
-  ipcMain.handle('config:set', (_e, patch) => config.save(patch || {}));
-  ipcMain.handle('config:reset', () => config.reset());
+  ipcMain.handle('config:set', (_e, patch) => {
+    const before = config.load().globalShortcut;
+    const next = config.save(patch || {});
+    if (next.globalShortcut !== before) applyShortcut();
+    return next;
+  });
+  ipcMain.handle('config:reset', () => {
+    const next = config.reset();
+    applyShortcut();
+    return next;
+  });
+
+  // Global kisayol sessizce kaydedilemeyebilir (baska uygulama tarafindan
+  // kapilmis, macOS'ta Ctrl+Space girdi kaynagi degistirir). Renderer bunu
+  // ayarlar ekraninda gosterir.
+  ipcMain.handle('shortcut:state', () => hooks.getShortcutState?.() ?? null);
+
+  // ---- Uzaktan kontrol (Telegram) ----
+  ipcMain.handle('telegram:status', () => {
+    const status = hooks.telegram?.status() ?? { running: false };
+    // Ortam degiskeni ayarlardaki degeri ezer; kullanici bunu bilmeli, yoksa
+    // "token'i degistirdim ama eski token calisiyor" diye tikanir.
+    return {
+      ...status,
+      tokenFromEnv: Boolean(process.env.TELEGRAM_BOT_TOKEN),
+      userIdFromEnv: Boolean(process.env.TELEGRAM_USER_ID),
+    };
+  });
+
+  ipcMain.handle('telegram:apply', async (_e, patch) => {
+    config.save({ telegram: patch || {} });
+    const next = config.load().telegram;
+    if (!hooks.telegram) return { ok: false, error: 'Denetleyici yok.' };
+
+    await hooks.telegram.stop();
+    if (!next.enabled) return { ok: true, running: false };
+
+    const result = await hooks.telegram.start();
+    return { ...result, running: hooks.telegram.isRunning };
+  });
 
   ipcMain.handle('config:pickFolder', async () => {
     const win = getWindow();
@@ -59,60 +101,42 @@ function register(getWindow) {
   ipcMain.handle('shell:showItem', (_e, p) => shell.showItemInFolder(p));
 
   // ---- Agent ----
-  ipcMain.handle('agent:send', async (_e, { history: hist, text }) => {
-    if (current) return { ok: false, error: 'Zaten calisan bir islem var.' };
+  // Olaylari runner yayinlar; renderer da Telegram da ayni akisi dinler.
+  runner.onEvent((evt) => send('agent:event', evt));
 
-    const controller = new AbortController();
-    const pendingApprovals = new Map();
-    current = { controller, pendingApprovals };
+  // Arayuz, onay kanallarindan yalnizca biri. Pencere yoksa `null` doner ve
+  // yaris digerlerine (Telegram) birakilir — istek askida kalmaz.
+  runner.registerApprover('ui', (req, { signal }) => {
+    const win = getWindow();
+    if (!win || win.isDestroyed()) return null;
 
-    try {
-      const result = await loop.run({
-        config: config.load(),
-        history: hist || [],
-        userText: text,
-        signal: controller.signal,
-        emit: (evt) => send('agent:event', evt),
-        requestApproval: (req) =>
-          new Promise((resolve) => {
-            if (controller.signal.aborted) return resolve('abort');
-            pendingApprovals.set(req.callId, resolve);
-            send('agent:approval', req);
-            controller.signal.addEventListener(
-              'abort',
-              () => {
-                if (pendingApprovals.has(req.callId)) {
-                  pendingApprovals.delete(req.callId);
-                  resolve('abort');
-                }
-              },
-              { once: true }
-            );
-          }),
-      });
-      return { ok: true, ...result };
-    } catch (err) {
-      send('agent:event', { type: 'error', message: err.message });
-      send('agent:event', { type: 'done' });
-      return { ok: false, error: err.message };
-    } finally {
-      current = null;
-    }
+    return new Promise((resolve) => {
+      pendingApprovals.set(req.callId, resolve);
+      send('agent:approval', req);
+
+      // Baska bir kanal once cevapladiginda arayuzdeki karti kapat.
+      signal.addEventListener('abort', () => {
+        if (pendingApprovals.delete(req.callId)) {
+          send('agent:approvalResolved', { callId: req.callId });
+          resolve(null);
+        }
+      }, { once: true });
+    });
   });
 
+  ipcMain.handle('agent:send', (_e, { history: hist, text }) =>
+    runner.start({ text, history: hist || [], source: 'ui' })
+  );
+
   ipcMain.handle('agent:approve', (_e, { callId, decision }) => {
-    const resolve = current?.pendingApprovals.get(callId);
+    const resolve = pendingApprovals.get(callId);
     if (!resolve) return false;
-    current.pendingApprovals.delete(callId);
+    pendingApprovals.delete(callId);
     resolve(decision);
     return true;
   });
 
-  ipcMain.handle('agent:stop', () => {
-    if (!current) return false;
-    current.controller.abort();
-    return true;
-  });
+  ipcMain.handle('agent:stop', () => runner.stop());
 }
 
 module.exports = { register };

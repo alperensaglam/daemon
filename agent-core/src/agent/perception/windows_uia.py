@@ -19,7 +19,7 @@ from typing import Any
 from ..core.dpi import ensure_dpi_aware
 from ..core.errors import BackendUnavailable, NoActiveWindow
 from ..core.types import Rect, UINode
-from .base import ExtractResult, UITreeExtractor
+from .base import ExtractResult, UITreeExtractor, WindowInfo
 
 # Guvenlik siniri: patolojik agaclarda (cok buyuk tablolar, sonsuz liste)
 # bellegi ve sureyi sabitler.
@@ -140,6 +140,70 @@ class WindowsUIAExtractor(UITreeExtractor):
         if not hwnd:
             raise NoActiveWindow("Aktif pencere bulunamadi.")
         return int(hwnd)
+
+    def list_windows(self) -> list[WindowInfo]:
+        """Gorunur ust duzey pencereler, on plandan arkaya dogru.
+
+        Eskiden bu kod cli.py icinde satir-ici bir ``win32gui`` importuyla
+        duruyordu. Tasinirken iki filtre eklendi:
+
+        * ``WS_EX_TOOLWINDOW`` — arac pencereleri gorev cubugunda gorunmez ve
+          hedef degildir.
+        * DWM "cloaked" bayragi — kapatilmis UWP uygulamalari sistemde
+          gorunmez birer pencere birakir. Bunlar olmadan liste bir suru
+          ``ApplicationFrameHost`` hayaletiyle doluyordu.
+        """
+        import ctypes  # noqa: PLC0415
+
+        import win32con  # noqa: PLC0415
+        import win32gui  # noqa: PLC0415
+
+        foreground = 0
+        try:
+            foreground = int(win32gui.GetForegroundWindow())
+        except Exception:
+            pass
+
+        def cloaked(hwnd: int) -> bool:
+            # DWMWA_CLOAKED = 14
+            value = ctypes.c_int(0)
+            try:
+                ctypes.windll.dwmapi.DwmGetWindowAttribute(
+                    ctypes.wintypes.HWND(hwnd), 14,
+                    ctypes.byref(value), ctypes.sizeof(value),
+                )
+            except Exception:
+                return False
+            return bool(value.value)
+
+        rows: list[WindowInfo] = []
+
+        def collect(hwnd, _):
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+            title = win32gui.GetWindowText(hwnd)
+            if not title.strip():
+                return
+            styles = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            if styles & win32con.WS_EX_TOOLWINDOW:
+                return
+            if cloaked(hwnd):
+                return
+            rect, minimized = self._window_geometry(hwnd)
+            rows.append(WindowInfo(
+                handle=int(hwnd),
+                title=title,
+                process_name=self._process_name(hwnd),
+                pid=0,
+                rect=rect,
+                is_active=(int(hwnd) == foreground),
+                is_minimized=minimized,
+            ))
+
+        win32gui.EnumWindows(collect, None)
+        # EnumWindows z-sirasina gore gezer; on plandaki basa alinir.
+        rows.sort(key=lambda w: not w.is_active)
+        return rows
 
     def resolve_content_window(self, hwnd: int) -> int:
         """UWP cerceve penceresini gercek icerik penceresine cevirir.

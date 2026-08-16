@@ -5,9 +5,14 @@ const fsp = require('fs/promises');
 const path = require('path');
 const { resolvePath, LIMITS, truncate } = require('../../security');
 
+// Her iki platformun da gurultulu klasorleri; ayrimi kod icinde yapmak yerine
+// birlesik tutuluyor cunku bir ad diger platformda zaten hic gorunmez.
+// 'Library' onemli: AppData'nin macOS karsiligi odur ve ~ altinda arama
+// yapilirken taranirsa sonuclar ise yaramaz onbellek dosyalariyla dolar.
 const SKIP_DIRS = new Set([
   'node_modules', '.git', '.svn', '$RECYCLE.BIN', 'System Volume Information',
   '.cache', 'AppData', '__pycache__', '.venv', 'venv', 'dist', 'build',
+  'Library', '.Trash', '.DS_Store',
 ]);
 
 const NUL = String.fromCharCode(0);

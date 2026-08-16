@@ -25,6 +25,14 @@ contextBridge.exposeInMainWorld('agent', {
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   showItem: (p) => ipcRenderer.invoke('shell:showItem', p),
 
+  // Platform — kisayol etiketi gibi gorsel farklar icin
+  platform: process.platform,
+  shortcutState: () => ipcRenderer.invoke('shortcut:state'),
+
+  // Uzaktan kontrol
+  telegramStatus: () => ipcRenderer.invoke('telegram:status'),
+  telegramApply: (patch) => ipcRenderer.invoke('telegram:apply', patch),
+
   // Agent
   send: (payload) => ipcRenderer.invoke('agent:send', payload),
   approve: (callId, decision) => ipcRenderer.invoke('agent:approve', { callId, decision }),
@@ -45,5 +53,16 @@ contextBridge.exposeInMainWorld('agent', {
     const h = () => cb();
     ipcRenderer.on('ui:openSettings', h);
     return () => ipcRenderer.removeListener('ui:openSettings', h);
+  },
+  onShortcutState: (cb) => {
+    const h = (_e, state) => cb(state);
+    ipcRenderer.on('ui:shortcutState', h);
+    return () => ipcRenderer.removeListener('ui:shortcutState', h);
+  },
+  // Bir onay baska bir kanaldan (Telegram) yanitlandiginda karti kapat.
+  onApprovalResolved: (cb) => {
+    const h = (_e, payload) => cb(payload);
+    ipcRenderer.on('agent:approvalResolved', h);
+    return () => ipcRenderer.removeListener('agent:approvalResolved', h);
   },
 });

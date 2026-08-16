@@ -67,6 +67,24 @@ class Rect:
         return cls(left, top, left + width, top + height)
 
     @classmethod
+    def from_origin_size(cls, x: float, y: float, width: float, height: float) -> "Rect":
+        """Köşe + boyut biçiminden kurar — platformdan bağımsız ad.
+
+        macOS'ta ``AXPosition``/``AXSize`` ve ``kCGWindowBounds`` de bu biçimdedir,
+        dolayısıyla sayısal olarak ``from_uia`` ile aynı işi yapar. Ayrı bir ad
+        olmasının sebebi dürüstlük: mac kodundan ``from_uia`` çağırmak yanlış
+        bilgi verirdi ve o metodun docstring'indeki UIA tuzağı orada geçerli
+        değildir.
+
+        Birim farkı vardır ve önemlidir: UIA fiziksel piksel, AX ise **point**
+        döndürür (Retina'da 2x). Bu tutarlıdır çünkü CGEvent de point ile
+        çalışır; yalnızca OCR yolu piksel verir ve ölçeklenmesi gerekir.
+        """
+        left, top = int(round(float(x))), int(round(float(y)))
+        return cls(left, top, left + int(round(float(width))),
+                   top + int(round(float(height))))
+
+    @classmethod
     def from_ltrb(cls, left: int, top: int, right: int, bottom: int) -> "Rect":
         """Doğrudan sol/üst/sağ/alt ile kurar (testler ve struct biçimi için)."""
         return cls(left, top, right, bottom)

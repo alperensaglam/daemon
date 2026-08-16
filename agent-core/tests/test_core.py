@@ -41,32 +41,66 @@ def test_merkez_hesabi():
 
 # --------------------------------------------------------------------- tuşlar
 
-@pytest.mark.parametrize("combo,mods,main", [
-    ("enter", 0, 0x0D),
-    ("a", 0, ord("A")),
-    ("f5", 0, 0x74),
-    ("ctrl+s", 1, ord("S")),
-    ("ctrl+shift+n", 2, ord("N")),
-    ("alt+f4", 1, 0x73),
+@pytest.mark.parametrize("combo,mods,key", [
+    ("enter", (), "enter"),
+    ("a", (), "a"),
+    ("f5", (), "f5"),
+    ("ctrl+s", ("ctrl",), "s"),
+    ("ctrl+shift+n", ("ctrl", "shift"), "n"),
+    ("alt+f4", ("alt",), "f4"),
 ])
-def test_kombinasyon_ayristirma(combo, mods, main):
-    parsed_mods, parsed_main = K.parse_combo(combo)
-    assert len(parsed_mods) == mods
-    assert parsed_main == main
+def test_kombinasyon_ayristirma(combo, mods, key):
+    """parse_combo kod değil **ad** döndürür.
+
+    Aynı "ctrl+s" dizesi Windows'ta VK_CONTROL+VK_S, macOS'ta
+    kVK_Control+kVK_ANSI_S demektir; kodu ayrıştırma katmanında üretmek iki
+    platformun tablolarını oraya sızdırırdı. Kod eşlemesi test_keycodes.py'de.
+    """
+    assert K.parse_combo(combo) == K.Combo(mods, key)
+
+
+@pytest.mark.parametrize("alias,kanonik", [
+    ("cmd+s", "meta+s"),
+    ("command+s", "meta+s"),
+    ("win+s", "meta+s"),
+    ("control+c", "ctrl+c"),
+    ("option+f", "alt+f"),
+    ("ctrl+return", "ctrl+enter"),
+    ("ctrl+escape", "ctrl+esc"),
+])
+def test_esanlamlilar_kanonik_ada_cevrilir(alias, kanonik):
+    """'meta' iki platformun işletim sistemi tuşunu birleştirir."""
+    assert K.parse_combo(alias) == K.parse_combo(kanonik)
 
 
 def test_bosluk_ve_buyuk_harf_toleransi():
     assert K.parse_combo(" CTRL + S ") == K.parse_combo("ctrl+s")
 
 
+def test_noktalama_tuslari_ayristirilir():
+    """Eski tabloda noktalama hiç yoktu; parse_combo('ctrl+,') hata veriyordu."""
+    assert K.parse_combo("ctrl+,") == K.Combo(("ctrl",), "comma")
+    assert K.parse_combo("ctrl+comma") == K.parse_combo("ctrl+,")
+
+
+def test_tekrarlanan_degistirici_bir_kez_sayilir():
+    assert K.parse_combo("ctrl+control+s") == K.Combo(("ctrl",), "s")
+
+
 def test_bilinmeyen_tus_aciklayici_hata_verir():
-    with pytest.raises(K.KeyParseError, match="Bilinmeyen tus"):
+    with pytest.raises(K.KeyParseError, match="Bilinmeyen tuş"):
         K.parse_combo("ctrl+kaplumbaga")
 
 
 def test_degistirici_olmayan_tus_on_ekte_reddedilir():
-    with pytest.raises(K.KeyParseError, match="degistirici"):
+    with pytest.raises(K.KeyParseError, match="değiştirici"):
         K.parse_combo("a+b")
+
+
+def test_sonda_degistirici_reddedilir():
+    """'ctrl+shift' bir eylem değildir; sonda gerçek bir tuş olmalı."""
+    with pytest.raises(K.KeyParseError, match="değiştirici"):
+        K.parse_combo("ctrl+shift")
 
 
 def test_bos_kombinasyon_reddedilir():

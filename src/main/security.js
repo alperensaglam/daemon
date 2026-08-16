@@ -3,6 +3,7 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { IS_WIN } = require('./platform');
 
 const LIMITS = {
   readFileBytes: 200 * 1024,
@@ -13,17 +14,28 @@ const LIMITS = {
 };
 
 // Yuksek riskli komut desenleri — otomatik onay modunda bile kullanici onayi ister.
-const DESTRUCTIVE_PATTERNS = [
+//
+// Desenler kabuk sozluguyle yazildigi icin platforma gore ayrilir: PowerShell
+// listesi macOS'ta hicbir zaman eslesmez, dolayisiyla tek liste kullanilirsa
+// macOS'ta pratikte HIC koruma kalmaz.
+
+// Her iki kabukta da ayni yazilan komutlar.
+const COMMON_PATTERNS = [
+  { re: /\brm\s+(-\w*[rf]\w*\s+)+/i, why: 'zorla/ozyinelemeli silme' },
+  { re: /\bshutdown\b/i, why: 'bilgisayari kapatiyor/yeniden baslatiyor' },
+  { re: /\b(curl|wget)\b[^|;]*\|\s*(ba|z|)sh\b/i, why: 'internetten indirip calistiriyor' },
+];
+
+const WIN_PATTERNS = [
   { re: /\bRemove-Item\b[^|;]*(-Recurse|-r\b)/i, why: 'klasoru icerigiyle birlikte siliyor' },
   { re: /\brmdir\b[^|;]*\/s/i, why: 'klasoru ozyinelemeli siliyor' },
   { re: /\bdel\b[^|;]*\/s/i, why: 'dosyalari ozyinelemeli siliyor' },
-  { re: /\brm\s+(-\w*[rf]\w*\s+)+/i, why: 'zorla/ozyinelemeli silme' },
   { re: /\bformat(-volume)?\b/i, why: 'disk bicimlendirme' },
   { re: /\bdiskpart\b/i, why: 'disk bolumleme araci' },
   { re: /\bClear-Disk\b/i, why: 'diski temizliyor' },
   { re: /\breg(\.exe)?\s+delete\b/i, why: 'kayit defteri silme' },
   { re: /\bRemove-ItemProperty\b/i, why: 'kayit defteri degeri silme' },
-  { re: /\b(shutdown|Stop-Computer|Restart-Computer)\b/i, why: 'bilgisayari kapatiyor/yeniden baslatiyor' },
+  { re: /\b(Stop-Computer|Restart-Computer)\b/i, why: 'bilgisayari kapatiyor/yeniden baslatiyor' },
   { re: /\bStop-Process\b[^|;]*-Force/i, why: 'surecleri zorla sonlandiriyor' },
   { re: /\bSet-ExecutionPolicy\b/i, why: 'betik guvenlik politikasini degistiriyor' },
   { re: /\b(Invoke-Expression|iex)\b/i, why: 'indirilen kodu calistirabilir' },
@@ -31,21 +43,63 @@ const DESTRUCTIVE_PATTERNS = [
   { re: /\bnetsh\b/i, why: 'ag ayarlarini degistiriyor' },
   { re: /\bbcdedit\b/i, why: 'onyukleme ayarlarini degistiriyor' },
   { re: /\bcipher\b[^|;]*\/w/i, why: 'disk uzerine yaziyor' },
-  { re: /\bvssadmin\b[^|;]*delete/i, view: true, why: 'geri yukleme noktalarini siliyor' },
+  { re: /\bvssadmin\b[^|;]*delete/i, why: 'geri yukleme noktalarini siliyor' },
+];
+
+const MAC_PATTERNS = [
+  { re: /\bsudo\b/i, why: 'yonetici yetkisiyle calisiyor' },
+  { re: /\bdiskutil\b/i, why: 'disk bolumleme araci' },
+  { re: /\bdd\b[^|;]*\bof=/i, why: 'diske ham veri yaziyor' },
+  { re: /\bmkfs\b|\bnewfs(_\w+)?\b/i, why: 'disk bicimlendirme' },
+  { re: /\bchmod\b[^|;]*-\w*R/i, why: 'ozyinelemeli izin degisikligi' },
+  { re: /\bchown\b[^|;]*-\w*R/i, why: 'ozyinelemeli sahiplik degisikligi' },
+  { re: /\blaunchctl\b/i, why: 'sistem servislerini degistiriyor' },
+  { re: /\bkillall\b/i, why: 'surecleri ada gore topluca sonlandiriyor' },
+  { re: /\bcsrutil\b/i, why: 'sistem butunlugu korumasini degistiriyor' },
+  { re: /\bspctl\b[^|;]*--master-disable/i, why: 'Gatekeeper korumasini kapatiyor' },
+  { re: /\bnvram\b/i, why: 'onyukleme degiskenlerini degistiriyor' },
+  { re: /\bdefaults\s+delete\b/i, why: 'uygulama ayarlarini siliyor' },
+  { re: />\s*\/dev\/\w+/i, why: 'aygita dogrudan yaziyor' },
+  { re: /\bpmset\b/i, why: 'guc yonetimi ayarlarini degistiriyor' },
+  { re: /\btmutil\s+(delete|disable)\b/i, why: 'Time Machine yedeklerini siliyor/kapatiyor' },
+];
+
+const DESTRUCTIVE_PATTERNS = [
+  ...COMMON_PATTERNS,
+  ...(IS_WIN ? WIN_PATTERNS : MAC_PATTERNS),
 ];
 
 // Sistem icin kritik, her durumda yazma yasagi olan kokler.
-const PROTECTED_ROOTS = [
-  path.join(process.env.SystemRoot || 'C:\\Windows'),
-  path.join(process.env.ProgramFiles || 'C:\\Program Files'),
-  process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)',
-].filter(Boolean).map((p) => path.resolve(p).toLowerCase());
+//
+// Windows listesi yalnizca Windows'ta uretilir: path.resolve('C:\\Windows')
+// macOS'ta "<cwd>/C:\Windows" gibi cop bir yol dondurur ve gercek bir goreceli
+// klasoru golgeleyebilirdi.
+function buildProtectedRoots() {
+  const roots = IS_WIN
+    ? [
+      process.env.SystemRoot || 'C:\\Windows',
+      process.env.ProgramFiles || 'C:\\Program Files',
+      process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)',
+    ]
+    : [
+      '/System', '/usr', '/bin', '/sbin', '/Library', '/Applications',
+      '/private/etc', '/private/var/db', '/Volumes',
+      path.join(os.homedir(), 'Library'),
+    ];
+  return roots.filter(Boolean).map((p) => path.resolve(p).toLowerCase());
+}
+
+const PROTECTED_ROOTS = buildProtectedRoots();
 
 function expand(p) {
   if (!p) return p;
   let out = String(p).trim().replace(/^["']|["']$/g, '');
   if (out.startsWith('~')) out = path.join(os.homedir(), out.slice(1));
+  // Windows sozdizimi (%VAR%) ve POSIX sozdizimi ($VAR / ${VAR}) birlikte
+  // desteklenir; her ikisi de diger platformda zararsizca eslesmez.
   out = out.replace(/%([^%]+)%/g, (m, name) => process.env[name] ?? m);
+  out = out.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, name) => process.env[name] ?? m);
+  out = out.replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (m, name) => process.env[name] ?? m);
   return out;
 }
 

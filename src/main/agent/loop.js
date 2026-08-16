@@ -6,6 +6,8 @@ const client = require('./client');
 const registry = require('./registry');
 const { assessRisk, needsApproval, truncate } = require('../security');
 const { salvageToolCalls } = require('./salvage');
+const { OS_LABEL } = require('../platform');
+const { desktopDir } = require('../config');
 
 let runCounter = 0;
 
@@ -190,7 +192,7 @@ function buildSystemPrompt(config) {
     '',
     '--- Ortam bilgisi ---',
     `Tarih ve saat: ${now.toLocaleString('tr-TR')} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
-    `Isletim sistemi: Windows (${os.release()})`,
+    `Isletim sistemi: ${OS_LABEL}`,
     `Kullanici adi: ${os.userInfo().username}`,
     `Ev klasoru: ${os.homedir()}`,
     '',
@@ -208,7 +210,7 @@ function buildSystemPrompt(config) {
 }
 
 function desktopLine(config) {
-  const desktop = path.join(os.homedir(), 'Desktop');
+  const desktop = desktopDir();
   const same = path.resolve(desktop).toLowerCase() === path.resolve(config.workspaceRoot).toLowerCase();
   return same
     ? '(Calisma alani zaten kullanicinin Masaustu klasorudur.)'

@@ -1,14 +1,32 @@
-# Çekirdek — UIA algı ve eylem katmanı
-comtypes>=1.4.0          # IUIAutomation COM arayüzü (tek round-trip CacheRequest)
-pywin32>=306             # GetForegroundWindow, SendInput, PrintWindow, DPI API
+# Ortam işaretçileri (`; sys_platform == ...`) olmadan bu dosya macOS'ta
+# doğrudan patlıyordu: comtypes ve pywin32'nin darwin tekerleği yok.
 
-# Vision fallback (accessibility ağacı sunmayan pencereler)
-Pillow>=10.0.0           # ekran görüntüsü tamponu
+# --- Çekirdek (platformdan bağımsız) ---
+Pillow>=10.0.0           # ekran görüntüsü tamponu — her iki capture yolu da kullanır
 
-# Test
+# --- Windows: UIAutomation + SendInput ---
+comtypes>=1.4.0 ; sys_platform == "win32"   # IUIAutomation (tek round-trip CacheRequest)
+pywin32>=306    ; sys_platform == "win32"   # GetForegroundWindow, PrintWindow, DPI, EnumWindows
+
+# --- macOS: AXUIElement + CGEvent + Vision ---
+# ApplicationServices, AXUIElement* sembollerinin bulunduğu HIServices modülünü
+# sağlar; HIServices ayrı bir dağıtım DEĞİLDİR, ayrıca listelenmez.
+# pyobjc'de üst düzey bir CoreGraphics modülü yoktur — CGEvent/CGWindowList
+# Quartz'tan import edilir.
+pyobjc-core>=11.0                          ; sys_platform == "darwin"
+pyobjc-framework-Cocoa>=11.0               ; sys_platform == "darwin"  # NSWorkspace, NSRunningApplication
+pyobjc-framework-Quartz>=11.0              ; sys_platform == "darwin"  # CGWindowList*, CGEvent*, CGImage
+pyobjc-framework-ApplicationServices>=11.0 ; sys_platform == "darwin"  # AXUIElement*
+pyobjc-framework-Vision>=11.0              ; sys_platform == "darwin"  # VNRecognizeTextRequest
+
+# --- Test ---
 pytest>=8.0.0
 
-# NOT: Windows.Media.Ocr için WinRT binding'i ayrıca kurulur.
+# NOT: Windows OCR (Windows.Media.Ocr) için WinRT binding'i ayrıca kurulur.
 # Paket adı sürümler arasında değişti (winsdk / winrt-*), bu yüzden
 # requirements'a sabitlenmedi; kurulum betiği hangisinin çalıştığını tespit eder.
 # Bkz. README > Vision fallback.
+#
+# NOT: macOS'ta ekran yakalama için modern yol ScreenCaptureKit'tir
+# (CGWindowListCreateImage macOS 14'ten beri deprecated). İsteğe bağlı:
+#   pip install pyobjc-framework-ScreenCaptureKit

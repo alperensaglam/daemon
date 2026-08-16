@@ -1,16 +1,27 @@
-# UIA Masaüstü Agent
+# Masaüstü Agent Çekirdeği (UIA / AXUIElement)
 
 Ekran görüntüsü ve VLM yerine işletim sisteminin **Erişilebilirlik Ağacı'nı**
-(Windows UI Automation) temel alan, deterministik ve düşük gecikmeli masaüstü
-agent çekirdeği.
+temel alan, deterministik masaüstü agent çekirdeği.
 
-Piksel tahmini yok: LLM `node_id` ile konuşur, eylem doğrudan UIA pattern'i
-(`InvokePattern.Invoke()`, `ValuePattern.SetValue()`) üzerinden işletim sistemi
-seviyesinde çalışır.
+| Platform | Algı | Eylem | Girdi | OCR |
+|---|---|---|---|---|
+| Windows | UI Automation (`comtypes`) | UIA pattern'leri | `SendInput` | `Windows.Media.Ocr` |
+| macOS | `AXUIElement` (pyobjc) | AX eylemleri | `CGEvent` | Vision framework |
+
+Piksel tahmini yok: LLM `node_id` ile konuşur, eylem doğrudan native pattern
+üzerinden (`InvokePattern.Invoke()` / `AXPress`) işletim sistemi seviyesinde
+çalışır.
+
+Backend seçimi `agent/platform.py` içindeki fabrikada yapılır ve **arka ucu
+import etmeden** karar verir; bu sayede paket, platform kütüphaneleri kurulu
+olmayan bir makinede de import edilebilir ve testler her iki sistemde koşar.
 
 > **Durum:** Algı + budama + eylem çekirdeği tamamlandı ve gerçek pencerelerde
-> doğrulandı. LLM döngüsü henüz yok — araç şemaları ve `LLMController` arayüzü
-> hazır, sürücü olarak CLI kullanılıyor.
+> doğrulandı. Üzerine iki katman eklendi: **eylem doğrulama** (önce/sonra ağaç
+> farkı, `execution/verifier.py`) ve **hibrit yürütme** (UI ⇄ kabuk
+> yönlendirmesi, `execution/router.py`). Agent döngüsü (`orchestrator/loop.py`)
+> hazır ve router üzerinden çalışır; eksik olan tek parça bir `LLMController`
+> adaptörüdür (Ollama/Anthropic).
 
 ---
 
@@ -54,39 +65,102 @@ okuma süreç-içidir.
 
 ## Kurulum
 
+`requirements.txt` ortam işaretçileri kullanır; her platform yalnızca kendi
+bağımlılıklarını kurar.
+
+**Windows**
+
 ```powershell
 winget install Python.Python.3.12
-cd uia-agent
 python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
 .\.venv\Scripts\pip install winsdk          # Vision fallback (isteğe bağlı)
 ```
 
-### Windows izinleri
+**macOS**
 
-- macOS'taki gibi ayrı bir "Accessibility izni" **yoktur**, ek onay gerekmez.
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt     # pyobjc paketleri
+```
+
+### İzinler
+
+**Windows** — ayrı bir erişilebilirlik izni yoktur.
+
 - **UIPI:** Yükseltilmemiş bir süreç, yönetici olarak çalışan pencereleri
   (Görev Yöneticisi, regedit) süremez. Onlar için agent'ı yönetici başlatın.
 - **DPI:** Süreç başlarken `PER_MONITOR_AWARE_V2` ayarlanır. Bu yapılmazsa
   ölçekli ekranlarda bounding box'lar kayar ve piksel fallback'i ıskalar.
 
+**macOS** — iki ayrı TCC izni gerekir:
+
+| İzin | Ne için | Olmazsa |
+|---|---|---|
+| **Erişilebilirlik** | AX ağacını okumak, CGEvent göndermek | `extract()` açık bir hata verir |
+| **Ekran Kaydı** | Vision fallback (yakalama), pencere başlıkları | OCR yolu kapalı; `list_windows` başlıkları AX'ten doldurur |
+
+> İzin, `python` binary'sine değil **onu çalıştıran uygulamaya** (Terminal.app,
+> iTerm2, VS Code) verilir ve **çalışan sürece geriye dönük uygulanmaz**. İzni
+> verdikten sonra o uygulamayı tamamen kapatıp (Cmd+Q) yeniden açın.
+>
+> İzinsiz bir süreç, geçerli görünen ama `AXChildren`'ı boş bir uygulama
+> elemanı alır ve her AX çağrısı `-25211` döner; bu yüzden kod izni her ağaç
+> okumasından önce ayrıca kontrol eder ve ne yapılacağını söyleyen bir hata
+> verir — sessizce boş ağaç dönmez.
+
+Durumu kontrol etmek ve canlı doğrulama için:
+
+```bash
+.venv/bin/python scripts/verify_macos.py            # izinler + ağaç + OCR
+.venv/bin/python scripts/verify_macos.py --bench 10 # gecikme ölçümü
+```
+
 ---
 
 ## Kullanım
 
+**Windows**
+
 ```powershell
 $env:PYTHONPATH="src"
 .\.venv\Scripts\python -m agent.cli windows              # pencereleri listele
-.\.venv\Scripts\python -m agent.cli snapshot             # aktif pencerenin durumu
-.\.venv\Scripts\python -m agent.cli snapshot --json      # LLM'e giden ham JSON
-.\.venv\Scripts\python -m agent.cli --hwnd 12345 click 7
-.\.venv\Scripts\python -m agent.cli type 3 "merhaba" --yes
-.\.venv\Scripts\python -m agent.cli key "ctrl+s" --target
-.\.venv\Scripts\python -m agent.cli bench --runs 12
+.\.venv\Scripts\python -m agent.cli snapshot --wait 3    # aktif pencerenin durumu
+.\.venv\Scripts\python -m agent.cli key "ctrl+s"
 ```
 
+**macOS**
+
+```bash
+export PYTHONPATH=src
+.venv/bin/python -m agent.cli windows                    # pencereleri listele
+.venv/bin/python -m agent.cli snapshot --wait 3          # aktif pencerenin durumu
+.venv/bin/python -m agent.cli snapshot --json            # LLM'e giden ham JSON
+.venv/bin/python -m agent.cli --hwnd 18887 click 7       # --hwnd burada CGWindowID
+.venv/bin/python -m agent.cli type 3 "merhaba" --yes
+.venv/bin/python -m agent.cli key "meta+s"               # meta = Cmd (Windows'ta Win)
+.venv/bin/python -m agent.cli bench --runs 12
+```
+
+**Hibrit yürütme (her iki platform)**
+
+```bash
+python -m agent.cli route "indirilenler klasorunu temizle"   # hangi şerit?
+python -m agent.cli shell "git status --short"               # kabuk şeridi
+python -m agent.cli --yes shell "ls -la ~/Desktop"
+```
+
+`route` yalnızca teşhis içindir; hiçbir şey çalıştırmaz. `shell` UI arka ucunu
+kurmaz, dolayısıyla `comtypes`/`pyobjc` olmayan bir makinede de çalışır.
+
 Terminal odaktayken `snapshot` terminali yakalar; hedef pencereye geçmek için
-`--wait 3` verin veya `--hwnd` ile doğrudan hedefleyin.
+`--wait 3` verin veya `--hwnd` ile doğrudan hedefleyin. `--hwnd` bayrağının adı
+geriye dönük uyumluluk için korundu; macOS'ta **CGWindowID** bekler ve
+`agent.cli windows` çıktısındaki ilk sütun budur.
+
+Tuş adlarında `meta` iki platformun işletim sistemi tuşunu birleştirir
+(Windows'ta Win, macOS'ta Command); `cmd`, `command`, `win`, `super` hepsi
+`meta`ya normalize edilir.
 
 ### Durum şeması (LLM'in gördüğü tek şey)
 
@@ -123,11 +197,60 @@ src/agent/
     keys.py               tuş eşlemesi, Unicode yazma, SendInput sarmalayıcı
   vision/
     fallback.py           PrintWindow + Windows.Media.Ocr
+  execution/
+    verifier.py           StateDiff + Expectation — eylem gerçekten oldu mu
+    router.py             şerit sınıflandırma + araç dağıtımı (UI ⇄ kabuk)
+    shell.py              PowerShell/bash motoru, zaman aşımı, engelli kalıplar
+  orchestrator/
+    loop.py               agent döngüsü: bütçe, tıkanma tespiti, bağlam hijyeni
   llm/
-    schemas.py            8 araç, OpenAI + Anthropic biçimi
+    schemas.py            9 araç (8 UI + run_shell), OpenAI + Anthropic biçimi
     base.py               LLMController ABC
-  safety.py               risk sınıflandırması + onay kapısı
+  safety.py               risk sınıflandırması + onay kapısı (UI ve kabuk)
 ```
+
+### Eylem doğrulama (Action → Observation → Verification)
+
+Native bir çağrı hatasız dönebilir ama hiçbir şey olmayabilir: düğme devre
+dışıdır, bir katman onu örter, uygulama isteği yutar. `ActionResult.ok` bu
+durumda `True`dur ve model doğru düğmeye bastığını sanarak devam eder.
+
+Her UI eyleminden sonra `Verifier` şunu yapar: ~60 ms bekle → yeni ağaç al →
+eylem öncesiyle karşılaştır → beklenti karşılandı mı bak. Karşılanmadıysa
+yoklamaya devam eder (bazı arayüzler 60 ms'de değil 600 ms'de tepki verir),
+zaman aşımında `ActionVerificationError` üretilir ve modele **ne beklendiği,
+ne gözlendiği ve hangi alternatifin denenebileceği** yazılır.
+
+| Eylem | Varsayılan beklenti |
+|---|---|
+| `click` | ağaçta ölçülebilir bir değişiklik (`expect_appears` ile hedefe özgü) |
+| `type_text` | hedef alanın değeri yazılan metne eşit (kırpma toleranslı) |
+| `focus` | klavye odağı hedefe geçti |
+| `scroll` | düğümler aynı yönde kaydı ya da liste yenilendi |
+| `press_key alt+f4` | aktif pencere değişti |
+
+Sonuç doğrulanamazsa araç çıktısı `ok: false` **ve** `executed: true` döner.
+Bu ayrım kritik: model "başarısız" görünce tekrar denemek ister, oysa eylem
+gönderilmiştir — geri alınamaz bir işlemi ikinci kez tetiklemek gerçek hasardır.
+
+### Hibrit yürütme (UI ⇄ kabuk)
+
+Saf UI agent'ı "300 dosyayı yeniden adlandır" görevini 300 tıklamayla çözmeye
+çalışır; saf CLI agent'ı Photoshop'ta filtre uygulayamaz. Router iki şeridi
+birden sunar ve hangi işin nereye gittiğine karar verir:
+
+| İş | Şerit |
+|---|---|
+| dosya/klasör, metin filtreleme, git, süreç/port, paket-derleme | `run_shell` |
+| uygulama içi menü, form, görsel araç, kullanıcının adıyla istediği uygulama | UIA / AX |
+
+Karar modele **dayatılmaz**, sistem promptuna ipucu olarak eklenir:
+sınıflandırıcı ekranı göremez, model görebilir. `agent.cli route "<hedef>"` bu
+kararı dışarıdan gösterir.
+
+Router ayrıca bir kilit tutar: bir eylem UI'yı değiştirdikten sonra yeni bir
+`get_state` alınmadan başka bir UI eylemi kabul edilmez. Doğrulayıcının aldığı
+ağaç önbelleğe konduğu için bu ek `get_state` yeni bir çıkarım yapmaz.
 
 ### Eylem önceliği — piksel en son
 
@@ -217,25 +340,91 @@ iptal edilir — sessizce yanlış pencereye gitmez.
 **OCR mükemmel değil.** Windows OCR "agent" kelimesini "ğggn_t" okuyabiliyor;
 Türkçe karakterler doğru geliyor. Fallback bir çare, birincil yol değil.
 
+### macOS'a özgü sınırlar
+
+Bunlar hata değil, **tasarım sınırıdır**; kovalanmamalı.
+
+**AX, UIA kadar hızlı olamaz.** UIA tüm alt ağaç için tek bir
+`BuildUpdatedCache` çağrısı yapar; AX **düğüm başına, öznitelik başına** bir
+süreçler arası tur atar. `AXUIElementCopyMultipleAttributeValues` ile 13
+öznitelik tek turda okunuyor, görünür-çocuk kısayolları kullanılıyor ve eylem
+sorguları rolle sınırlanıyor — ama karşılığı yoktur. Bu bir API biçimi
+farkıdır, eksik optimizasyon değil.
+
+**Bayatlık koruması Windows'takinden zayıf.** AX'te `RuntimeId` yoktur;
+kimlik `(pid, ağaç yolu, rol/subrole/identifier, başlık)` crc32'lerinden
+sentezlenir ve karşılaştırma yerine **doğrulama** yapılır. Aynı ağaç yolunda
+görsel olarak özdeş bir elemanla değiştirilen düğüm ayırt edilemez —
+`NSTableView` hücre geri dönüşümü kaydırırken tam olarak bunu yapar.
+
+**Menü çubuğu pencere alt ağacında değildir.** macOS'ta menüler *uygulama*
+elemanına (`kAXMenuBar`) bağlıdır. Pencere kapsamlı bir `extract()` sıfır
+File/Edit/View öğesi içerir, dolayısıyla "File → Save'e tıkla" akışı
+Windows'taki gibi çalışmaz. Bu bir yetenek boşluğudur, eşleme hatası değil.
+
+**Chromium ağacı tembeldir ve açılması istenmelidir.** Çıkarıcı, yürüyüşten
+önce `AXManualAccessibility` bayrağını kurar; bu olmadan Chrome/VS Code/Slack
+neredeyse boş ağaç döner.
+
+**Klavye kodları konumsaldır.** `keycodes_mac` ANSI konum kodları kullanır, yani
+Türkçe-F düzeninde `meta+s` fiziksel olarak S konumundaki tuşa basar. Doğrusu
+`UCKeyTranslate` ile aktif düzeni ters eşlemektir; yapılmadı. **Metin yazma
+bundan etkilenmez** — `type_unicode` düzenden bağımsızdır.
+
+**`ctrl` çevirisi varsayılan olarak kapalıdır.** macOS'ta `ctrl+a`/`ctrl+e`/
+`ctrl+k` gerçek Cocoa kısayollarıdır (satır başı/sonu/sil). Her `ctrl`i sessizce
+`cmd`ye çevirmek bunları erişilemez kılardı; çeviri opt-in'dir ve devreye
+girdiğinde `ActionResult.detail`de görünür.
+
+**Odak her elemanda çalışmaz.** Düğmeler ve onay kutuları yalnızca *Sistem
+Ayarları > Klavye > Klavye ile gezinme* açıkken klavye odağı kabul eder;
+`focus()` bu durumda yeşil "OK" yerine ipucu içeren bir hata döner.
+
 ---
 
 ## Test
 
-```powershell
-.\.venv\Scripts\python -m pytest        # 75 birim testi, UIA gerektirmez
+```bash
+python -m pytest                       # birim testleri, işletim sistemi gerektirmez
+python -m pytest --run-gui -m macos    # canlı macOS testleri (izin ister)
 ```
 
 Birim testler gerçek pencere kullanmaz: filtreleme kuralları sabit girdilerle
 doğrulanabilir olmalı, aksi halde sonuç makinede hangi uygulamanın açık
 olduğuna göre değişir ve test bir şey kanıtlamaz.
 
+Paket **her iki platformda da** yeşil koşar ve bu bir tesadüf değil, tasarım
+kararıdır: tuş kod tabloları (`keycodes_win`, `keycodes_mac`), AX rol
+eşlemesi (`ax_roles`) ve OCR geometrisi (`vision/geometry`) hiçbir platform
+API'si import etmez, dolayısıyla Windows kodları macOS'ta (ve tersi) test
+edilebilir. Öne çıkan birkaç test:
+
+| Test | Ne yakalar |
+|---|---|
+| `test_ax_roles.py` | Eşleme tablosundaki her değerin budayıcının sözlüğünde olduğu. Bir yazım hatası (`"Buton"`) o rolün tüm düğümlerini sessizce düşürürdü. |
+| `test_ax_roles_survive_pruner` | `AXScrollArea`nın **yalnızca** sentezlenen `Scroll` pattern'i sayesinde budamadan sağ çıktığı — yoksa düğüme göre kaydırma imkânsız olurdu. |
+| `test_vision_geometry.py` | Normalize + sol-alt flip + Retina ölçeği matematiği. Hatası sessizdir: kutular kayar, istisna oluşmaz. |
+| `test_platform.py::test_fabrika_backend_import_etmez` | Fabrikanın arka ucu import etmediği. Bozulursa paket yine platform kütüphanesi olmayan makinede import edilemez hale gelir. |
+| `test_backend_contract.py` | Her arka ucun tüm soyut metotları uyguladığı — eksik metot import anında değil, **kurulunca** patlar. |
+
 ---
 
-## Sonraki adım: LLM döngüsü
+## Sonraki adım: LLM adaptörü
 
-`llm/schemas.py` sekiz aracı tanımlar (`get_state`, `click`, `type_text`,
-`press_key`, `scroll`, `focus`, `wait`, `done`) ve hem OpenAI hem Anthropic
-biçiminde verir. `llm/base.py` sözleşmeyi belirler.
+`llm/schemas.py` dokuz aracı tanımlar (`get_state`, `click`, `type_text`,
+`press_key`, `scroll`, `focus`, `wait`, `done`, `run_shell`) ve hem OpenAI hem
+Anthropic biçiminde verir. `llm/base.py` sözleşmeyi belirler; döngü
+(`orchestrator/loop.py`) ve dağıtım (`execution/router.py`) hazır — eksik olan
+`LLMController.propose()` uygulamasıdır:
+
+```python
+from agent.execution.router import build_router
+from agent.orchestrator import AgentLoop
+
+router = build_router(mode="ask")          # UI + kabuk + doğrulama
+result = AgentLoop(MyOllamaController(), router).run("hedef metni")
+print(result.success, result.summary, result.tool_calls)
+```
 
 Adaptör yazılırken bu makinede ölçülmüş iki davranış hesaba katılmalı:
 

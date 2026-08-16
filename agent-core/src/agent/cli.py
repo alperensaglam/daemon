@@ -11,6 +11,8 @@ Kullanim:
     python -m agent.cli type 3 "merhaba" --yes
     python -m agent.cli key "ctrl+s"
     python -m agent.cli scroll down
+    python -m agent.cli shell "git status"
+    python -m agent.cli route "indirilenler klasorunu temizle"
     python -m agent.cli bench --runs 10
     python -m agent.cli windows
 """
@@ -23,11 +25,14 @@ import statistics
 import sys
 import time
 
-from .action.windows_uia import WindowsUIAExecutor
+from .action.base import ActionExecutor
 from .core.errors import AgentError
 from .core.types import Snapshot
+from .execution.router import classify
+from .execution.shell import ShellConfig, ShellRunner
+from .perception.base import UITreeExtractor, format_window_row
 from .perception.pruner import PruneConfig, TreePruner
-from .perception.windows_uia import WindowsUIAExtractor
+from .platform import create_backend, resolve_backend
 from .safety import ApprovalGate
 from .vision.fallback import extract_via_vision, should_fallback
 
@@ -36,10 +41,19 @@ from .vision.fallback import extract_via_vision, should_fallback
 #  Kurulum
 # --------------------------------------------------------------------------- #
 
-def build(args) -> tuple[WindowsUIAExtractor, TreePruner, WindowsUIAExecutor, ApprovalGate]:
-    extractor = WindowsUIAExtractor()
+def build(args) -> tuple[UITreeExtractor, TreePruner, ActionExecutor, ApprovalGate]:
+    """Platformun arka ucunu kurar.
+
+    Somut sinif adlari burada gecmez; secimi ``platform.create_backend`` yapar.
+    Desteklenmeyen bir platformda veya eksik bagimlilikta ``BackendUnavailable``
+    firlar ve main()'deki mevcut ``except AgentError`` onu tek satirlik bir
+    hataya cevirir.
+    """
+    extractor, executor = create_backend(verify=not args.no_verify)
     pruner = TreePruner(PruneConfig(max_nodes=args.max_nodes))
-    executor = WindowsUIAExecutor(extractor=extractor, verify=not args.no_verify)
+    # Dogrulama yeniden budama yapar; ayni yapilandirmayi kullanmazsa
+    # "once" ve "sonra" parmak izleri hep farkli cikar (bkz. common.BaseExecutor).
+    executor.attach_pruner(pruner)
     mode = "dry_run" if args.dry_run else ("yes" if args.yes else "ask")
     return extractor, pruner, executor, ApprovalGate(mode)
 
@@ -177,21 +191,56 @@ def cmd_scroll(args) -> int:
 
 
 def cmd_windows(args) -> int:
-    """Gorunur ust duzey pencereleri listeler — hwnd bulmak icin."""
-    import win32gui
+    """Gorunur ust duzey pencereleri listeler — pencere tutamaci bulmak icin."""
+    extractor, *_ = build(args)
+    rows = extractor.list_windows()
+    for window in rows:
+        print(format_window_row(window))
+    print(f"\n{len(rows)} pencere  (* = on planda, _ = simge durumunda)")
+    return 0
 
-    rows: list[tuple[int, str]] = []
 
-    def collect(hwnd, _):
-        if win32gui.IsWindowVisible(hwnd):
-            title = win32gui.GetWindowText(hwnd)
-            if title.strip():
-                rows.append((hwnd, title))
+def cmd_shell(args) -> int:
+    """Kabuk seridini surer — hibrit yurutmenin CLI tarafi.
 
-    win32gui.EnumWindows(collect, None)
-    for hwnd, title in rows:
-        print(f"{hwnd:>10}  {title[:80]}")
-    print(f"\n{len(rows)} pencere")
+    UI arka ucunu KURMAZ: bir kabuk komutu icin comtypes/pyobjc gerekmez ve
+    bunlarin kurulu olmadigi bir makinede de bu komut calisir.
+    """
+    runner = ShellRunner(ShellConfig(timeout=args.timeout, cwd=args.cwd))
+    mode = "dry_run" if args.dry_run else ("yes" if args.yes else "ask")
+    gate = ApprovalGate(mode)
+
+    allowed, reason = gate.check("run_shell", None, args.command)
+    if not allowed:
+        print(f"atlandi: {reason}")
+        return 0 if gate.is_dry_run else 2
+
+    try:
+        result = runner.run(args.command)
+    except AgentError as exc:
+        print(f"ENGELLENDI: {exc}", file=sys.stderr)
+        return 3
+
+    if result.stdout:
+        print(result.stdout)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr)
+    if result.error:
+        print(f"HATA: {result.error}", file=sys.stderr)
+    print(f"[{result.shell}] cikis={result.exit_code} "
+          f"sure={result.elapsed_ms:.0f}ms", file=sys.stderr)
+    return result.exit_code if result.exit_code else 0
+
+
+def cmd_route(args) -> int:
+    """Bir hedef metninin hangi seride dustugunu gosterir (teshis)."""
+    decision = classify(args.text)
+    print(f"serit    : {decision.lane.value}")
+    print(f"guven    : {decision.confidence}")
+    print(f"puanlar  : {decision.scores}")
+    print(f"gerekce  : {', '.join(decision.reasons)}")
+    print()
+    print(decision.hint())
     return 0
 
 
@@ -275,8 +324,15 @@ def main(argv: list[str] | None = None) -> int:
         prog="agent.cli",
         description="Erisilebilirlik agaci tabanli masaustu agent — cekirdek CLI",
     )
-    parser.add_argument("--hwnd", type=int, default=None,
-                        help="Hedef pencere tutamaci (varsayilan: aktif pencere)")
+    # Tutamacin adi platforma gore degisir (HWND / CGWindowID); bayrak adi
+    # geriye donuk uyumluluk icin --hwnd kaldi.
+    try:
+        handle_label = resolve_backend().handle_label
+    except AgentError:
+        handle_label = "pencere tutamaci"
+    parser.add_argument("--hwnd", type=int, default=None, metavar=handle_label.upper(),
+                        help=f"Hedef pencere tutamaci / {handle_label} "
+                             "(varsayilan: aktif pencere)")
     parser.add_argument("--wait", type=int, default=0, metavar="SN",
                         help="Islemden once N saniye bekle (hedef pencereye gecmek icin)")
     parser.add_argument("--max-nodes", type=int, default=150,
@@ -322,6 +378,16 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("windows", help="Gorunur pencereleri listele")
     p.set_defaults(func=cmd_windows)
+
+    p = sub.add_parser("shell", help="Kabuk komutu calistir (hibrit yurutme)")
+    p.add_argument("command", help='ornek: "git status"')
+    p.add_argument("--cwd", default=None, help="Calisma dizini")
+    p.add_argument("--timeout", type=float, default=20.0, help="Saniye")
+    p.set_defaults(func=cmd_shell)
+
+    p = sub.add_parser("route", help="Bir hedef hangi seride dusuyor (teshis)")
+    p.add_argument("text", help='ornek: "indirilenler klasorunu temizle"')
+    p.set_defaults(func=cmd_route)
 
     p = sub.add_parser("bench", help="Gecikme olcumu")
     p.add_argument("--runs", type=int, default=10)
